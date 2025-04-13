@@ -1,0 +1,152 @@
+name: Auto-merge PRs
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+    paths:
+      - 'nama_pelaku/*.txt' # Hanya jalankan jika file .txt di direktori nama_pelaku berubah
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      
+    steps:
+      # Checkout kode repositori
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+
+      # Periksa apakah PR hanya memodifikasi file .txt di direktori nama_pelaku
+      - name: Check if PR only modifies txt files in nama_pelaku
+        id: is_only_nama_pelaku_txt_changed
+        run: |
+          # Dapatkan daftar file yang berubah di pull request
+          PR_FILES=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" | \
+            jq -r '.[].filename')
+          FILES_CHANGED=$(echo $PR_FILES | tr '\n' ' ')
+
+          echo "files_changed=$FILES_CHANGED" >> $GITHUB_ENV
+          
+          # Periksa apakah semua file yang berubah ada di direktori nama_pelaku dan berakhiran .txt
+          ONLY_NAMA_PELAKU_TXT=true
+          for file in $FILES_CHANGED; do
+            if [[ ! "$file" =~ ^nama_pelaku/.*\.txt$ ]]; then
+              ONLY_NAMA_PELAKU_TXT=false
+              break
+            fi
+          done
+          
+          echo "only_nama_pelaku_txt=$ONLY_NAMA_PELAKU_TXT" >> $GITHUB_ENV
+
+      # Merge pull request jika hanya file .txt di nama_pelaku yang berubah
+      - name: Merge PR
+        id: merge_pr
+        if: env.only_nama_pelaku_txt == 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              // Coba merge pull request dengan metode squash
+              const response = await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                merge_method: "squash"
+              })
+
+              if (response.status === 200) {
+                const celebrationGifs = [
+                  'https://c.tenor.com/ZCq4SwgCfxAAAAAC/snoopy-peanuts.gif',
+                  'https://c.tenor.com/Z0ojZS2kpO0AAAAC/milk-and-mocha-happy.gif',
+                  'https://c.tenor.com/LffD4a8ET9AAAAAC/heart-celebrate.gif',
+                  'https://c.tenor.com/HJ0iSKwIG28AAAAC/yes-baby.gif',
+                  'https://c.tenor.com/4blWuIh5MIYAAAAC/baby-yoda.gif',
+                  'https://c.tenor.com/B_zYdea4l-4AAAAC/yay-minions.gif',
+                  'https://media1.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
+                  'https://media2.giphy.com/media/IwAZ6dvvvaTtdI8SD5/giphy.gif',
+                  'https://media0.giphy.com/media/z8gtBVdZVrH20/giphy.gif',
+                  'https://media2.giphy.com/media/26gN16cJ6gy4LzZSw/giphy.gif',
+                  'https://media1.giphy.com/media/LZElUsjl1Bu6c/giphy.gif',
+                  'https://media1.giphy.com/media/gHnwTttExPf4nwOWm7/giphy.gif',
+                ]
+
+                const getRandomGif = () => celebrationGifs[Math.floor(Math.random() * celebrationGifs.length)]
+
+                const getMergeMessage = (username) => {
+                  const greeting = `Hello @${username}, selamat! Kamu berhasil mengirimkan pull request. 🎉`;
+                  const feedbackMessage = `Semangat menempuh perkuliahan yaw 😹. Oiya btw kamu dapet Achivement, bisa di cek di profilemu XD`;
+                  const gif = `![celebration gif](${getRandomGif()})`;
+
+                  return `${greeting}\n\n${feedbackMessage}\n\n${gif}`;
+                }
+
+                const message = getMergeMessage(context.payload.pull_request.user.login);
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: message
+                })
+              }
+            } catch (error) {
+              let errMsg = "";
+              console.error("Error merging pull request:", error.message);
+
+              if (error.status === 405 && error.response.data.message === "Pull Request is not mergeable") {
+                errMsg = `Hello @${context.payload.pull_request.user.login}, Dawg ada konflik 💀🙏`;
+              } else if (error.status === 409) {
+                errMsg = "Pull request memiliki konflik dengan branch tujuan. Selesaikan konflik sebelum merging.";
+              } else {
+                errMsg = "Terjadi kesalahan saat merging pull request.";
+              }
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: errMsg
+              })
+
+              core.setFailed(error.message);
+            }
+
+      # Komentar jika PR tidak di-merge otomatis
+      - name: Post comment on PR if not merged automatically
+        if: env.only_nama_pelaku_txt != 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const {data: comments} = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.number,
+            })
+
+            const botComment = comments.find(comment => comment.user.login === 'github-actions[bot]')
+
+            const body = `Pull request ini berisi perubahan pada file yang memerlukan review. File yang berubah:\n\n${process.env.files_changed.trim() ? `\n\n${process.env.files_changed.trim().split(' ').map(file => `- ${file}`).join('\n')}` : ''}`
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              })
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              })
+            }
